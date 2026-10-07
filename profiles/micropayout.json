@@ -1,0 +1,27 @@
+{
+  "name": "micropayouts",
+  "examples": {
+    "help_description": "Diagnostic self-help (read-only). Returns the current execution state (idle|seq_active|hold) and active micropayout plan summary (plan_hash, objective, steps). Includes copyable next_actions with required_signals and payload_template. Use when uncertain or after 400/409.",
+    "action_start_use_cases": [
+      "POST /feature/implement — Establish a two-step micropayout stream (authorize/assemble; then settle/post). Include _signals.approval:\"PLAN APPROVED\" and an approved agreement_id.",
+      "PATCH /feature/implement/active — Execute the next step with plan:'$ACTIVE_PLAN' + plan_hash and include a Continue signal.",
+      "POST /action/active/acknowledge-audit-failure — Resolve Hold with Override signal and justification (Hold-only).",
+      "POST /feature/implement/abort — Abort the active plan (Hold-only).",
+      "GET /bug/diagnose — Read-only triage.",
+      "POST /bug/capture-failure — Knowledge capture for a prior failed bug fix.",
+      "PATCH /bug/diagnose/implement-fix — Apply a bug fix (requires agreement_id; prior capture if previous_attempt_failed=true).",
+      "PATCH /gap/correct — Apply a correction plan (requires agreement_id)."
+    ]
+  },
+  "investigation_read_only_tools": ["checkCompliance", "getAccountBalance", "riskScore"],
+  "write_tools": ["reserveFunds", "assembleInstruction", "submitToNetwork", "postLedger"],
+  "testing": {
+    "step_fail_reason_template": "Compliance/policy check failed at step {step_index}.",
+    "final_qc_discrepancy_template": "Final reconciliation mismatch detected at step {step_index}."
+  },
+  "job_packet": {
+    "env": {
+      "program": "micropayouts"
+    }
+  }
+}

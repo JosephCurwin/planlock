@@ -1,0 +1,52 @@
+{
+  "name": "windmill-support",
+  "examples": {
+    "help_description": "Diagnostic self-help (read-only). Returns the execution state and the active support plan summary (plan_hash, objective, steps) with copyable next_actions.",
+    "action_start_use_cases": [
+      "POST /feature/implement \u2014 Establish an approved support plan (e.g. refund \u2192 email \u2192 close ticket). Requires an agreement_id approved by the human.",
+      "PATCH /feature/implement/active \u2014 Execute the next step with plan:'$ACTIVE_PLAN' + plan_hash and a Continue signal.",
+      "POST /feature/implement/abort \u2014 Abort the active plan (Hold-only).",
+      "GET /bug/diagnose \u2014 Read-only lookups (orders, jobs)."
+    ]
+  },
+  "investigation_read_only_tools": [
+    "s-f_support_get__order",
+    "getScriptByPath",
+    "listScripts"
+  ],
+  "write_tools": [
+    "s-f_support_refund__customer",
+    "s-f_support_send__email",
+    "s-f_support_close__ticket",
+    "runScriptByPath",
+    "runFlowByPath",
+    "runScriptPreviewAndWaitResult",
+    "createScript",
+    "updateScript",
+    "deleteScriptByHash",
+    "deleteScriptByPath",
+    "createFlow",
+    "updateFlow",
+    "deleteFlowByPath",
+    "createApp",
+    "updateApp",
+    "createVariable",
+    "updateVariable",
+    "deleteVariable",
+    "createResource",
+    "updateResource",
+    "deleteResource",
+    "createSchedule",
+    "updateSchedule",
+    "deleteSchedule"
+  ],
+  "testing": {
+    "step_fail_reason_template": "Support step {step_index} failed verification.",
+    "final_qc_discrepancy_template": "Final check mismatch at step {step_index}."
+  },
+  "job_packet": {
+    "env": {
+      "program": "windmill-support"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+services:
+  planlock:
+    build: .
+    environment:
+      APPROVER_TOKEN: ${APPROVER_TOKEN:?set APPROVER_TOKEN in .env}
+      PORT: 3001
+      ADMIN_PORT: 4001
+      # Inside the container the approver channel must listen on all interfaces;
+      # the port mapping below still exposes it only on the host's loopback.
+      ADMIN_HOST: 0.0.0.0
+      APPROVAL_MODE: human
+      DEV_MODE: "true"
+      LOG_ROOT: /tmp/run
+      DOMAIN_PROFILE_PATH: /app/profiles/micropayout.json
+      UPSTREAM_COMMAND: node
+      UPSTREAM_ARGS_JSON: '["/app/examples/mock-business/server.mjs"]'
+      MOCK_LEDGER_PATH: /tmp/run/mock_ledger.jsonl
+    ports:
+      - "127.0.0.1:${PORT:-3001}:3001"
+      - "127.0.0.1:${ADMIN_PORT:-4001}:4001"

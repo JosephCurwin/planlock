@@ -1,0 +1,49 @@
+# Local Windmill (server + worker + Postgres) for the Planlock demo.
+# Default Windmill login: admin@windmill.dev / changeme (local only).
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: windmill
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 20
+  windmill_server:
+    image: ghcr.io/windmill-labs/windmill:1.825.0
+    environment:
+      DATABASE_URL: postgres://postgres:changeme@db/windmill?sslmode=disable
+      MODE: server
+    depends_on:
+      db: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:8000:8000"
+  windmill_worker:
+    image: ghcr.io/windmill-labs/windmill:1.825.0
+    environment:
+      DATABASE_URL: postgres://postgres:changeme@db/windmill?sslmode=disable
+      MODE: worker
+      WORKER_GROUP: default
+    depends_on:
+      db: { condition: service_healthy }
+
+  # The guardrail in front of Windmill's MCP. Start after `node examples/windmill/setup.mjs`.
+  planlock:
+    build: ../..
+    profiles: ["guard"]
+    env_file: [.env.windmill]
+    environment:
+      APPROVER_TOKEN: ${APPROVER_TOKEN:?set APPROVER_TOKEN}
+      PORT: 3001
+      ADMIN_PORT: 4001
+      ADMIN_HOST: 0.0.0.0
+      APPROVAL_MODE: human
+      DEV_MODE: "true"
+      LOG_ROOT: /tmp/run
+      DOMAIN_PROFILE_PATH: /app/profiles/windmill-support.json
+    entrypoint: ["sh", "-c", "UPSTREAM_URL=\"http://windmill_server:8000/api/mcp/w/demo/mcp?token=$$WINDMILL_MCP_TOKEN\" exec node dist/http.js"]
+    depends_on: [windmill_server]
+    ports:
+      - "127.0.0.1:3101:3001"
+      - "127.0.0.1:4101:4001"

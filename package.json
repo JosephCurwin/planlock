@@ -1,0 +1,29 @@
+{
+  "name": "planlock",
+  "version": "0.7.0",
+  "description": "Guardrail MCP proxy: human-approved, step-bound plan execution for agents",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "planlock": "dist/http.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/http.js",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "npm run build && node --test test/guard.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.25.1",
+    "@types/js-yaml": "^4.0.9",
+    "dotenv": "^16.4.5",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5.3.3"
+  }
+}

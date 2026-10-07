@@ -1,0 +1,762 @@
+#
+# Guardrail Transaction Protocol (derived minimal governance)
+#
+protocol:
+  id: guardrail.v1
+  name: Guardrail Transaction Router
+  version: 1.0.0
+  updated: 2025-09-20
+  description: Minimal, adversarial-test-oriented protocol for gated transactions, plan integrity, hold/override, and conflicts. Domain-neutral; operational tool catalogs are supplied dynamically by the upstream Business MCP and/or a domain profile.
+
+# === Transaction model (both) ===
+transaction_model:
+  pattern:
+    - action_start
+    - operational_tools*
+    - action_commit
+  notes:
+    - action_start declares route and payload and activates the route's permission_class for the transaction.
+    - operational_tools are constrained by permission_class (investigation or development).
+    - action_commit triggers the audit (Commit Gate) and returns the standardized response envelope.
+
+# === MCP binding: control tools (both; canonical tool names the LLM must call and the server must expose) ===
+mcp_binding:
+  control_tools:
+    action_start:
+      name: action_start
+      description: "Begin a transaction by declaring the route and payload. Start-Ack: server acknowledges with allowed_tools, signals_required, and an optional payload_template to copy. These do not bypass signals or the Commit Gate."
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [route, payload]
+        properties:
+          route:
+            type: string
+            description: "METHOD SP PATH, e.g., 'POST /feature/implement'. Must match a declared route."
+            pattern: "^(GET|POST|PATCH|DELETE)\\s\\/.+"
+          payload:
+            type: object
+            description: "Route-specific request body; schema defined per route in this document."
+      ack_envelope:
+        type: object
+        additionalProperties: true
+        properties:
+          allowed_tools:
+            type: array
+            items: { type: string }
+            description: "Exact tools permitted for the transaction per route permission_class (and route overrides if any)."
+          signals_required:
+            type: array
+            items: { type: string }
+            description: "Any human signals required for this route (e.g., approval, continue, override)."
+          payload_template:
+            type: object
+            additionalProperties: true
+            description: "When present, a minimal payload skeleton suitable for this route that the assistant can copy."
+    action_commit:
+      name: action_commit
+      description: Commit Gate. Finalizes the transaction and runs the audit. Returns standardized response envelope.
+      input_schema:
+        type: object
+        additionalProperties: false
+        properties: {}
+    agreement_message:
+      name: agreement_phase_message
+      description: "Auditable, no-op communication channel for any human-facing text (clarifying questions, summaries, updates). Ensures conversation is tools-only."
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [message]
+        properties:
+          message:
+            type: string
+            description: "Human-readable message for the user."
+          context:
+            type: string
+            nullable: true
+            description: "Optional tag (e.g., 'clarification', 'summary')."
+    agreement_submit:
+      name: agreement_submit
+      description: "Submit a plan for server-side storage and review; receive a server-issued agreement_id. The plan will be linked to future execution attempts."
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [plan_type, plan]
+        properties:
+          plan_type:
+            type: string
+            enum: ["feature_executable", "diagnostic", "correction"]
+            description: "Type of plan being submitted."
+          plan:
+            type: object
+            description: "The plan object. For feature_executable: objective, strategic_summary, steps[]. For diagnostic/correction: fields as in DiagnosticPlanFix/CorrectionPlan."
+    agreement_approve:
+      name: agreement_approve
+      description: "Record that a specific agreement was approved by the human. Returns status=approved (idempotent)."
+      input_schema:
+        type: object
+        additionalProperties: false
+        required: [agreement_id]
+        properties:
+          agreement_id:
+            type: string
+            description: "Identifier returned from agreement_submit."
+          approval_proof:
+            type: string
+            nullable: true
+            description: "Optional deployment-specific proof of approval."
+
+tools_catalog:
+  # Domain-neutral placeholder. The guardrail discovers operational tools dynamically from the upstream Business MCP.
+  read_only:
+    - actionHelp
+  read_write: []
+
+permission_classes:
+  investigation:
+    description: Read-only triage; no write/operational operations.
+    # Domain-neutral: leave empty to allow dynamic behavior (profile- and upstream-driven)
+    allowed_tools: []
+  development:
+    description: Operational execution; write operations plus read-only checks.
+    # Domain-neutral: leave empty to allow dynamic behavior (all upstream tools by default)
+    allowed_tools: []
+
+# === Human signals (prompt only; referenced by preconditions and execution flow) ===
+signals:
+  approval_signal:
+    id: approval
+    channel: human
+    match:
+      type: exact_text
+      value: "PLAN APPROVED"
+  continue_signal:
+    id: continue
+    channel: human
+    match:
+      type: semantic_intent
+      guidance: "User explicitly instructs to proceed to the next Step or accept final completion."
+  override_signal:
+    id: override
+    channel: human
+    match:
+      type: semantic_intent
+      guidance: "User explicitly authorizes continuing despite a failed audit and provides justification text."
+  abort_signal:
+    id: abort
+    channel: human
+    match:
+      type: semantic_intent
+      guidance: "User explicitly instructs to abort the active sequential execution context."
+
+# === Standardized response envelope (both; server returns, prompt teaches) ===
+response_envelope: &response_envelope
+  fields:
+    status_code:
+      type: integer
+      allowed: [200, 202, 400, 403, 409, 500]
+    status_text:
+      type: string
+    headers:
+      type: object
+      additionalProperties: true
+      properties:
+        X-Audit-Verdict:
+          type: string
+          allowed: ["PASSED", "FAILED"]
+          description: "Required whenever an audit runs (i.e., after Commit Gate)."
+    body:
+      type: object
+      additionalProperties: true
+      properties:
+        resolution_hint:
+          type: string
+          description: "Present on 409 conflicts with machine-readable resolution guidance."
+        next_actions:
+          type: array
+          description: "When present, a machine-provided list of valid next routes with minimal payload templates the assistant can copy verbatim. Signals are still required where applicable."
+          items:
+            type: object
+            additionalProperties: true
+            required: [route]
+            properties:
+              route:
+                type: string
+                description: "METHOD SP PATH of the next action."
+              required_signals:
+                type: array
+                items: { type: string }
+              payload_template:
+                type: object
+                additionalProperties: true
+        assistant_guidance:
+          type: object
+          additionalProperties: true
+          description: "When present, a concise call-sequence skeleton the assistant can follow directly. Does not bypass signals or audit."
+          properties:
+            rationale: { type: string }
+            call_sequence:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+                properties:
+                  tool: { type: string }
+                  args: { type: object, additionalProperties: true }
+            alternatives:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+                properties:
+                  tool: { type: string }
+                  args: { type: object, additionalProperties: true }
+        plan_hash:
+          type: string
+          description: "When present after plan establishment, this hash identifies the active plan. Reuse alongside plan:'$ACTIVE_PLAN' for Feature continuation shorthand. The server verifies integrity."
+        step_verification:
+          type: array
+          description: "On Feature Step PASSED, the exact verification items for the implemented Step echoed from the active plan."
+          items: { type: string }
+        announcement_template:
+          type: string
+          description: "On Feature Step PASSED, the standardized announcement text to copy (e.g., 'Step [index]: [name] implemented. Awaiting Continue Signal.')."
+    error:
+      type: object
+      additionalProperties: true
+    state_snapshot:
+      type: object
+      required: [state, seq_context]
+      properties:
+        state: { type: string, enum: [idle, seq_active, hold] }
+        seq_context:
+          type: [object, "null"]
+          properties:
+            current_step_index: { type: integer, minimum: 1 }
+            total_steps: { type: integer, minimum: 1 }
+            awaiting_continue: { type: boolean }
+  status_mappings:
+    audit_passed: { status_code: 200, headers.X-Audit-Verdict: PASSED }
+    audit_failed: { status_code: 403, headers.X-Audit-Verdict: FAILED }
+    bad_request: { status_code: 400 }
+    conflict: { status_code: 409 }
+    accepted: { status_code: 202 }
+    server_error: { status_code: 500 }
+
+# === Audit rules and commit gate (both; server enforces, prompt documents) ===
+audit:
+  commit_gate_route: "PATCH /action/active"
+  mandatory_on_commit: true
+  header: "X-Audit-Verdict"
+  verdicts: ["PASSED", "FAILED"]
+  rules:
+    - id: disallow_write_in_investigation
+      when:
+        any:
+          - equals: { key: route.permission_class, value: investigation }
+      verdict: FAILED
+      hold: true
+      reason: "Write operations are not allowed in investigation mode. Only tools permitted by Start-Ack for investigation may be used."
+    - id: implement_fix_requires_capture_if_previous_failed
+      when:
+        equals: { key: route.string, value: "PATCH /bug/diagnose/implement-fix" }
+      require_if:
+        key: payload.previous_attempt_failed
+        equals: true
+        then:
+          flag: bugCaptureLogged
+          value: true
+      conflict_on_fail:
+        status_code: 409
+        body.resolution_hint: "Record the prior failed attempt first via POST /bug/capture-failure."
+  side_effects: []
+
+state_model:
+  states: [idle, seq_active, hold]
+  fields:
+    seq_context:
+      current_step_index: integer
+      total_steps: integer
+      awaiting_continue: boolean
+  flags:
+    bugCaptureLogged: boolean
+  rehydration_invariant: "On restart, reconstruct Execution Context and Hold State solely from the durable event sequence; assistant memory is not a source of truth."
+  allowed_routes_by_state:
+    idle:
+      - "GET /action/help"
+      - "POST /feature/implement"
+      - "GET /bug/diagnose"
+      - "PATCH /bug/diagnose/implement-fix"
+      - "POST /bug/capture-failure"
+      - "PATCH /gap/correct"
+    seq_active:
+      - "GET /action/help"
+      - "PATCH /feature/implement/active"
+    hold:
+      - "GET /action/help"
+      - "POST /action/active/acknowledge-audit-failure"
+      - "POST /feature/implement/abort"
+
+# === Canonical events (both; emitted by server and named in prompt) ===
+events:
+  - id: PLAN_APPROVED
+    payload_schema:
+      type: object
+      required: [plan]
+      properties:
+        plan: { $ref: "#/schemas/ExecutableSpecification" }
+  - id: STEP_IMPLEMENTED
+    payload_schema:
+      type: object
+      required: [step_index, step_name]
+      properties:
+        step_index: { type: integer, minimum: 1 }
+        step_name: { type: string }
+  - id: SEQUENTIAL_PLAN_ON_HOLD
+    payload_schema:
+      type: object
+      required: [reason, step_index, audit_report]
+      properties:
+        reason: { type: string }
+        step_index: { type: integer, minimum: 1 }
+        audit_report: { type: string }
+  - id: FAILURE_OVERRIDDEN_AND_PROMOTED
+    payload_schema:
+      type: object
+      required: [resolved_step_index, next_step_index]
+      properties:
+        resolved_step_index: { type: integer, minimum: 1 }
+        next_step_index: { type: integer, minimum: 1 }
+  - id: SEQUENTIAL_PLAN_ABORTED
+    payload_schema:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string }
+  - id: PLAN_CONFLICT_DETECTED
+    payload_schema:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string }
+  - id: CORRECTION_PLAN_APPROVED
+    payload_schema:
+      type: object
+      required: [plan]
+      properties:
+        plan: { $ref: "#/schemas/CorrectionPlan" }
+  - id: DIAGNOSTIC_PLAN_APPROVED
+    payload_schema:
+      type: object
+      required: [plan]
+      properties:
+        plan: { $ref: "#/schemas/DiagnosticPlan" }
+  - id: BUGFIX_ATTEMPT_LOGGED
+    payload_schema:
+      type: object
+      required: [failed_approach, observed_failure]
+      properties:
+        failed_approach: { type: string }
+        observed_failure: { type: string }
+  - id: AGREEMENT_SUBMITTED
+    payload_schema:
+      type: object
+      additionalProperties: false
+      required: [agreement_id, plan_type, plan_hash]
+      properties:
+        agreement_id: { type: string }
+        plan_type: { type: string, enum: ["feature_executable", "diagnostic", "correction"] }
+        plan_hash: { type: string }
+  - id: AGREEMENT_APPROVED
+    payload_schema:
+      type: object
+      additionalProperties: false
+      required: [agreement_id, plan_type, plan_hash]
+      properties:
+        agreement_id: { type: string }
+        plan_type: { type: string, enum: ["feature_executable", "diagnostic", "correction"] }
+        plan_hash: { type: string }
+
+# === Routes (both; canonical router and their constraints) ===
+routes:
+  - id: action.help
+    method: GET
+    path: /action/help
+    permission_class: investigation
+    request_schema:
+      type: object
+      additionalProperties: false
+      properties: {}
+    description: "Assistant-facing diagnostic route. Returns state, active plan summary, required signals, allowed routes in the current state, and copyable next_actions templates. Read-only; no audit; no state changes."
+    preconditions:
+      state: ["idle", "seq_active", "hold"]
+    effects:
+      on_commit:
+        audit: false
+        passed:
+          # No state transition; informational only
+          {}
+        failed:
+          # Not expected in normal operation
+          {}
+  - id: feature.establish
+    method: POST
+    path: /feature/implement
+    permission_class: development
+    request_schema: { $ref: "#/schemas/ExecutableSpecificationRequest" }
+    preconditions:
+      state: ["idle", "seq_active"]
+      signals_required: ["approval"]
+      supersedence:
+        enabled: true
+        require_when_state: "seq_active"
+        requires_fields: ["supersedes_active_plan", "plan.justification_for_rewrite"]
+        conflict_status: 409
+        conflict_body_resolution_hint: "To replace the active plan, set supersedes_active_plan:true and include plan.justification_for_rewrite."
+    effects:
+      on_accept:
+        emit_event: { id: PLAN_APPROVED, payload: { plan: "$.payload.plan" } }
+        state_transition:
+          to: seq_active
+          seq_context:
+            current_step_index: 1
+            total_steps: "$.payload.plan.steps.length"
+            awaiting_continue: false
+        response_hints:
+          body:
+            plan_hash: "Server may include a plan_hash identifying the active plan for use with Feature continuation shorthand (plan:'$ACTIVE_PLAN' + plan_hash)."
+
+  - id: feature.continue
+    method: PATCH
+    path: /feature/implement/active
+    permission_class: development
+    request_schema: { $ref: "#/schemas/ExecutableSpecificationContinuationRequest" }
+    description: "Executes the next Step in the active Executable Specification. Shorthand allowed to satisfy plan integrity: plan:'$ACTIVE_PLAN' + plan_hash; server expands to full plan and verifies equality before validation. On hash mismatch, expect 409 with a resolution_hint."
+    preconditions:
+      state: ["seq_active"]
+      hold_forbidden: true
+      signals_required: ["continue"]
+      plan_integrity:
+        require_full_unchanged_plan: true
+      payload_shorthand:
+        allowed: true
+        spec:
+          plan: "$ACTIVE_PLAN"
+          plan_hash: "String; must match the active plan hash previously returned by server."
+        conflict_on_fail:
+          scenario_id: feature_plan_hash_mismatch
+          status_code: 409
+    effects:
+      on_commit:
+        audit: true
+        passed:
+          emit_event:
+            id: STEP_IMPLEMENTED
+            payload:
+              step_index: "$.state.seq_context.current_step_index"
+              step_name: "$.payload.plan.steps[$.state.seq_context.current_step_index-1].name"
+          response_echo:
+            body.step_verification: "Echoed verification items for the implemented Step."
+            body.announcement_template: "Echoed standardized announcement string to copy."
+          state_transition:
+            conditional:
+              if: "last_step_committed"
+              then: { to: idle }
+              else: { to: seq_active, seq_context.awaiting_continue: true, seq_context.current_step_index: "$inc" }
+        failed:
+          emit_event:
+            id: SEQUENTIAL_PLAN_ON_HOLD
+            payload:
+              reason: "Audit failed for sequential Step"
+              step_index: "$.state.seq_context.current_step_index"
+              audit_report: "$.audit.report"
+          state_transition: { to: hold }
+
+  - id: feature.abort
+    method: POST
+    path: /feature/implement/abort
+    permission_class: development
+    request_schema:
+      type: object
+      additionalProperties: false
+    operational_tools_allowed: []
+    preconditions:
+      state: ["hold"]
+    effects:
+      on_commit:
+        status: 200
+        emit_event:
+          id: SEQUENTIAL_PLAN_ABORTED
+          payload: { reason: "Aborted by explicit command" }
+        state_transition: { to: idle }
+      idempotent: true
+
+  - id: action.commit
+    method: PATCH
+    path: /action/active
+    permission_class: development
+    request_schema:
+      type: object
+      additionalProperties: false
+    description: "Commit Gate for any active transaction. Always runs the audit."
+    effects:
+      audit: true
+      response_envelope: *response_envelope
+
+  - id: action.ack_override
+    method: POST
+    path: /action/active/acknowledge-audit-failure
+    permission_class: development
+    operational_tools_allowed: []
+    request_schema:
+      type: object
+      additionalProperties: false
+      required: [justification]
+      properties:
+        justification: { type: string, minLength: 1 }
+    preconditions:
+      state: ["hold"]
+      signals_required: ["override"]
+    effects:
+      on_accept:
+        emit_event:
+          id: FAILURE_OVERRIDDEN_AND_PROMOTED
+          payload:
+            resolved_step_index: "$.state.seq_context.current_step_index"
+            next_step_index: "$add($.state.seq_context.current_step_index,1)"
+        state_transition:
+          conditional:
+            if: "sequential_context_exists"
+            then: { to: seq_active, seq_context.awaiting_continue: true, seq_context.current_step_index: "$inc" }
+            else: { to: idle }
+
+  - id: bug.capture_failure
+    method: POST
+    path: /bug/capture-failure
+    permission_class: investigation
+    operational_tools_allowed: []
+    request_schema: { $ref: "#/schemas/KnowledgeCaptureRecord" }
+    preconditions:
+      state: ["idle"]
+    effects:
+      on_commit:
+        status: 200
+        emit_event:
+          id: BUGFIX_ATTEMPT_LOGGED
+          payload:
+            failed_approach: "$.payload.failed_approach"
+            observed_failure: "$.payload.observed_failure"
+        flags:
+          set: { bugCaptureLogged: true }
+
+  - id: bug.diagnose.readonly
+    method: GET
+    path: /bug/diagnose
+    permission_class: investigation
+    request_schema:
+      type: object
+      additionalProperties: false
+      properties: {}
+    preconditions:
+      state: ["idle"]
+    effects:
+      on_commit:
+        audit: true
+        passed: { state_transition: { to: idle } }
+        failed: { state_transition: { to: hold } }
+
+  - id: bug.diagnose.fix
+    method: PATCH
+    path: /bug/diagnose/implement-fix
+    permission_class: development
+    request_schema: { $ref: "#/schemas/DiagnosticPlanFix" }
+    description: "Implements a bug fix. If previous_attempt_failed=true, prior POST /bug/capture-failure is required (409 otherwise)."
+    preconditions:
+      state: ["idle"]
+    effects:
+      on_commit:
+        audit: true
+        passed:
+          flags:
+            set: { bugCaptureLogged: false }
+          state_transition: { to: idle }
+        failed:
+          state_transition: { to: hold }
+
+  - id: gap.correct
+    method: PATCH
+    path: /gap/correct
+    permission_class: development
+    request_schema: { $ref: "#/schemas/CorrectionPlan" }
+    description: "Applies a Correction Plan."
+    preconditions:
+      state: ["idle"]
+    effects:
+      on_commit:
+        audit: true
+        passed:
+          emit_event: { id: CORRECTION_PLAN_APPROVED, payload: { plan: "$.payload" } }
+          state_transition: { to: idle }
+        failed:
+          state_transition: { to: hold }
+
+# === Schemas (both; server validation + prompt structure clarity) ===
+schemas:
+  ExecutableSpecification:
+    type: object
+    additionalProperties: false
+    required: [objective, strategic_summary, steps]
+    properties:
+      objective: { type: string, minLength: 1, maxLength: 300 }
+      strategic_summary: { type: string, minLength: 1, maxLength: 500 }
+      steps:
+        type: array
+        minItems: 1
+        items:
+          $ref: "#/schemas/Step"
+      justification_for_rewrite: { type: string }
+  Step:
+    type: object
+    additionalProperties: false
+    required: [name, description, verification]
+    properties:
+      name: { type: string, minLength: 1 }
+      description: { type: string, minLength: 1 }
+      verification:
+        type: array
+        minItems: 1
+        items: { type: string, minLength: 1 }
+  ExecutableSpecificationRequest:
+    type: object
+    additionalProperties: false
+    required: [plan]
+    properties:
+      agreement_id: { type: string, description: "Server-issued id from agreement_submit (must be approved before execution starts)." }
+      supersedes_active_plan: { type: boolean, default: false }
+      plan: { $ref: "#/schemas/ExecutableSpecification" }
+  ExecutableSpecificationContinuationRequest:
+    type: object
+    additionalProperties: false
+    required: [plan]
+    properties:
+      plan_hash: { type: string, description: "Required when using payload shorthand plan:'$ACTIVE_PLAN'." }
+      plan: { $ref: "#/schemas/ExecutableSpecification" }
+  CorrectionPlan:
+    type: object
+    additionalProperties: false
+    required: [root_cause, modification_plan]
+    properties:
+      agreement_id: { type: string, description: "Server-issued id from agreement_submit (must be approved before execution starts)." }
+      root_cause: { type: string, minLength: 1 }
+      modification_plan:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          additionalProperties: false
+          required: [change]
+          properties:
+            change: { type: string }
+      cleanup:
+        type: array
+        items: { type: string }
+  DiagnosticPlan:
+    type: object
+    additionalProperties: false
+    required: [path]
+    properties:
+      path:
+        type: string
+        enum: ["read_only_triage", "implement_fix"]
+      objective: { type: string }
+      identified_information_gap: { type: string }
+      root_cause: { type: string }
+      proposed_fix: { type: string }
+      justification: { type: string }
+      cleanup:
+        type: array
+        items: { type: string }
+  DiagnosticPlanFix:
+    # Expanded properties so linters that don't merge allOf recognize allowed fields
+    type: object
+    additionalProperties: false
+    properties:
+      agreement_id: { type: string, description: "Server-issued id from agreement_submit (must be approved before execution starts)." }
+      root_cause: { type: string }
+      proposed_fix: { type: string }
+      justification: { type: string }
+      cleanup:
+        type: array
+        items: { type: string }
+      path: { const: "implement_fix" }
+      previous_attempt_failed: { type: boolean, default: false }
+  KnowledgeCaptureRecord:
+    type: object
+    additionalProperties: false
+    required: [failed_approach, observed_failure]
+    properties:
+      failed_approach: { type: string, minLength: 1 }
+      observed_failure: { type: string, minLength: 1 }
+
+# === Conflict handling (both; server responses + prompt guidance) ===
+conflict_handling:
+  status_code: 409
+  body.resolution_hint:
+    type: string
+  scenarios:
+    - id: start_new_plan_while_active
+      resolution_hint: "Either supersede the active plan (set supersedes_active_plan:true with plan.justification_for_rewrite) or abort it via POST /feature/implement/abort."
+    - id: continue_without_active_plan
+      resolution_hint: "No active sequential context. Establish a plan via POST /feature/implement first."
+    - id: violate_route_permissions
+      resolution_hint: "The called operational tool is not permitted for this route's permission_class."
+    - id: implement_fix_without_capture
+      resolution_hint: "Record the prior failed attempt first via POST /bug/capture-failure."
+    - id: feature_plan_hash_mismatch
+      resolution_hint: "Plan hash mismatch. Provide the full unchanged plan or resend plan:'$ACTIVE_PLAN' with the correct plan_hash from the last response."
+
+# === Logging and rehydration (MCP; prompt may reference location for audit trail) ===
+logging:
+  file: "session_events.log"
+  format: jsonl
+  required_records:
+    - tool_call
+    - txn_started
+    - audit_verdict
+    - txn_committed
+    - permission_denied
+    - event_emitted
+    - hold_entered
+    - hold_resolved
+    - abort
+  record_fields:
+    - txn_id
+    - route
+    - timestamp
+  rehydration:
+    enabled: true
+    algorithm_summary: "Replay event log at startup to rebuild seq_active index and hold origin."
+
+prompt_generation:
+  must_include_sections:
+    - "Agreement Phase: tools-only communication (no free-form text); use agreement_phase_message; submit with agreement_submit; approve with agreement_approve; Route Family Selection; Plan deliverables (lite)"
+    - "Plan sealing (immutability while awaiting approval): present Step 3 plan, then lock it; handle 'approve+change' by offering proceed-as-is or restart the Agreement Phase."
+    - "Return-to-Agreement Triggers (Explicit): pre-approval change requests; mid-approval 'approve+change'; mid-execution course-change not offered via server next_actions; Audit FAILED/Hold; verification mismatch; ambiguous/missing authorization; new constraints."
+    - "CRITICAL: FINAL APPROVAL GATE (exact phrase 'PLAN APPROVED')"
+    - "Loop discipline (client-driven): agreement_phase_message ends the turn; actionHelp and all other tools can be chained by the client; do not rely on flags."
+    - "Canonical tool syntax (action_start/action_commit + examples)"
+    - "Action Start Acknowledgment (Start-Ack): allowed_tools, signals_required, payload_template; copying templates does not bypass signals/audit"
+    - "Standardized response envelope: state_snapshot (no instrumentation flag), resolution_hint, next_actions, assistant_guidance, plan_hash"
+    - "Action Help: use the actionHelp tool (single-call) or GET /action/help route (two-call). Both return state, plan hash, and copyable next_actions."
+    - "Route table (method, path, permission_class, key preconditions)"
+    - "Feature continuation shorthand: plan:'$ACTIVE_PLAN' + plan_hash; integrity verification"
+    - "Commit Gate outcomes: Hold with override/abort; override requires justification; abort route is POST /feature/implement/abort"
+    - "State model summary and permitted actions in Hold"
+    - "Knowledge capture obligation before implement_fix if previous attempt failed"
+    - "Conflict handling via resolution_hint semantics"
+  examples_required:
+    - "Two-step sequential executable plan; Step 1 uses read-only operations to prepare and validate; Step 2 uses write operations to apply changes; continue via plan:'$ACTIVE_PLAN' + plan_hash."
+    - "Audit failure handling: present server report; STOP; override via POST /action/active/acknowledge-audit-failure (with justification) or abort."
+    - "Bug flow: capture-failure then implement-fix with previous_attempt_failed=true; commit gate enforces capture requirement (409)."
+    - "Abort example: POST /feature/implement/abort is idempotent (Hold-only)."
+    - "Help example: Call the actionHelp tool (no args) to discover plan_hash and the correct next continuation payload when seq_active; or call GET /action/help if the tool is unavailable."
